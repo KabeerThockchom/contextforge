@@ -58,12 +58,14 @@ class InMemoryStore(MemoryStore):
     async def clear_memories(self, before: Optional[datetime] = None) -> None:
         """Clear expired memories."""
         if before is None:
-            before = datetime.now()
-        
-        self.memories = deque(
-            (m for m in self.memories if m.get("expires_at", before) > before),
-            maxlen=self.memories.maxlen
-        )
+            # Clear all memories
+            self.memories.clear()
+        else:
+            # Clear memories before the specified date
+            self.memories = deque(
+                (m for m in self.memories if m.get("expires_at", before) > before),
+                maxlen=self.memories.maxlen
+            )
 
 
 class SQLiteMemoryStore(MemoryStore):
@@ -135,7 +137,8 @@ class SQLiteMemoryStore(MemoryStore):
         if before:
             conn.execute("DELETE FROM memories WHERE expires_at < ?", (before.isoformat(),))
         else:
-            conn.execute("DELETE FROM memories WHERE expires_at < datetime('now')")
+            # Clear all memories
+            conn.execute("DELETE FROM memories")
         conn.commit()
         conn.close()
 

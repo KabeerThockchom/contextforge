@@ -38,6 +38,12 @@ class Context:
         """Convert context to provider-compatible message format."""
         messages = []
         
+        # Helper function to serialize datetime objects
+        def json_serialize(obj):
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
+        
         # Add system message
         system_parts = []
         if self.system_prompt:
@@ -47,7 +53,7 @@ class Context:
             system_parts.append("\n## Instructions\n" + "\n".join(f"- {inst}" for inst in self.instructions))
         
         if self.long_term_memory:
-            system_parts.append("\n## Long-term Memory\n" + json.dumps(self.long_term_memory, indent=2))
+            system_parts.append("\n## Long-term Memory\n" + json.dumps(self.long_term_memory, indent=2, default=json_serialize))
         
         if self.available_tools:
             system_parts.append("\n## Available Tools\n" + json.dumps(self.available_tools, indent=2))
@@ -65,10 +71,10 @@ class Context:
         # Add retrieved info and short-term memory as user context if present
         context_parts = []
         if self.short_term_memory:
-            context_parts.append("## Recent Context\n" + json.dumps(self.short_term_memory, indent=2))
+            context_parts.append("## Recent Context\n" + json.dumps(self.short_term_memory, indent=2, default=json_serialize))
         
         if self.retrieved_info:
-            context_parts.append("## Retrieved Information\n" + json.dumps(self.retrieved_info, indent=2))
+            context_parts.append("## Retrieved Information\n" + json.dumps(self.retrieved_info, indent=2, default=json_serialize))
         
         if context_parts and messages:
             # Insert context before the last user message
@@ -290,7 +296,12 @@ class Chain:
         result = initial_input
         for operation in self.operations:
             if isinstance(result, dict):
-                result = await operation(**result)
+                # Try to pass as keyword arguments first
+                try:
+                    result = await operation(**result)
+                except TypeError:
+                    # If that fails, pass as a single positional argument
+                    result = await operation(result)
             else:
                 result = await operation(result)
         return result

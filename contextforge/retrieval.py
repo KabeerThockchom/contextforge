@@ -32,9 +32,24 @@ class VectorRetriever(Retriever):
         """Simple embedding using character frequencies (for demo)."""
         # In production, use proper embeddings (OpenAI, sentence-transformers, etc.)
         embedding = np.zeros(128)
-        for i, char in enumerate(text[:128]):
-            embedding[i % 128] += ord(char) / 1000
-        return embedding / np.linalg.norm(embedding)
+        text_lower = text.lower()
+        
+        # Simple approach: use word hashes for embedding
+        words = text_lower.split()
+        for i, word in enumerate(words[:128]):
+            # Hash each word to a position in the embedding
+            hash_val = hash(word) % 128
+            embedding[hash_val] += 1
+            
+        # Also include character-based features for robustness
+        for i, char in enumerate(text_lower[:64]):
+            embedding[64 + (i % 64)] += ord(char) / 1000
+            
+        # Normalize to unit vector
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        return embedding
     
     async def add_document(self, document: Dict[str, Any]) -> None:
         """Add document with its embedding."""
