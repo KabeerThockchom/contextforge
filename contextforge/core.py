@@ -19,6 +19,7 @@ class Message:
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # Add tool_calls field
 
 
 @dataclass
@@ -34,7 +35,7 @@ class Context:
     output_schema: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     
-    def to_messages(self) -> List[Dict[str, str]]:
+    def to_messages(self) -> List[Dict[str, Any]]:
         """Convert context to provider-compatible message format."""
         messages = []
         
@@ -66,7 +67,14 @@ class Context:
         
         # Add conversation messages
         for msg in self.messages:
-            messages.append({"role": msg.role, "content": msg.content})
+            msg_dict = {"role": msg.role, "content": msg.content}
+            # Include tool_calls if present
+            if msg.tool_calls:
+                msg_dict["tool_calls"] = msg.tool_calls
+            # Include tool_call_id for tool messages (required by OpenAI)
+            if msg.role == "tool" and msg.metadata.get("tool_call_id"):
+                msg_dict["tool_call_id"] = msg.metadata["tool_call_id"]
+            messages.append(msg_dict)
         
         # Add retrieved info and short-term memory as user context if present
         context_parts = []
@@ -133,6 +141,42 @@ class ContextEngine:
             self.sessions[session_id] = ConversationMemory(session_id)
         return self.sessions[session_id]
     
+    def _convert_tools_for_provider(self, tool_descriptions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert tool descriptions to provider-specific format."""
+        # For Ollama, convert to OpenAI-style function format
+        tools = []
+        for desc in tool_descriptions:
+            # Convert parameter types to JSON schema format
+            properties = {}
+            required = []
+            
+            for param_name, param_info in desc.get("parameters", {}).items():
+                param_type = param_info.get("type", "string")
+                prop = {"type": param_type}
+                
+                if "default" in param_info:
+                    prop["default"] = param_info["default"]
+                else:
+                    required.append(param_name)
+                
+                properties[param_name] = prop
+            
+            tool = {
+                "type": "function",
+                "function": {
+                    "name": desc["name"],
+                    "description": desc["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    }
+                }
+            }
+            tools.append(tool)
+        
+        return tools
+    
     async def generate(
         self,
         prompt: str,
@@ -190,58 +234,174 @@ class ContextEngine:
         context.short_term_memory = short_term
         
         # Add available tools
-        if use_tools:
+        tools = None
+        if use_tools and self.tool_registry.tools:
             context.available_tools = self.tool_registry.get_tool_descriptions()
+            # Convert tools to provider format
+            tools = self._convert_tools_for_provider(context.available_tools)
+            kwargs["tools"] = tools
         
         # Generate response
         messages = context.to_messages()
         
         if stream:
             # For streaming, we need to handle the response differently
-            return self._stream_generate(messages, session, user_msg, **kwargs)
+            return self._stream_generate(messages, session, user_msg, use_tools=use_tools, **kwargs)
         else:
             response = await self.provider.generate(messages, stream=False, **kwargs)
             
+            # Handle different response formats
+            content = ""
+            tool_calls = None
+            
+            if isinstance(response, dict):
+                content = response.get("content", "")
+                tool_calls = response.get("tool_calls", None)
+            else:
+                content = response
+            
             # Handle tool calls if present
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_results = await self._execute_tools(response.tool_calls)
-                # Add tool results to context and regenerate
-                context.messages.append(Message(role="assistant", content=response.content))
-                context.messages.append(Message(role="user", content=f"Tool results: {json.dumps(tool_results)}"))
-                messages = context.to_messages()
-                response = await self.provider.generate(messages, stream=False, **kwargs)
+            if tool_calls:
+                # Convert tool calls to our format
+                formatted_tool_calls = []
+                for tc in tool_calls:
+                    if "function" in tc:
+                        # Parse arguments if they're a JSON string (OpenAI format)
+                        args = tc["function"]["arguments"]
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        
+                        formatted_tool_calls.append({
+                            "name": tc["function"]["name"],
+                            "arguments": args
+                        })
+                
+                if formatted_tool_calls:
+                    tool_results = await self._execute_tools(formatted_tool_calls)
+                    
+                    # Add assistant message with tool calls
+                    assistant_msg = Message(
+                        role="assistant", 
+                        content=content,
+                        tool_calls=tool_calls
+                    )
+                    context.messages.append(assistant_msg)
+                    
+                    # Add tool results as messages
+                    # For OpenAI, each tool result needs to be a separate message with tool_call_id
+                    for i, (result, tc) in enumerate(zip(tool_results, tool_calls)):
+                        tool_call_id = tc.get("id", f"call_{i}")
+                        tool_result_msg = Message(
+                            role="tool",
+                            content=json.dumps(result),
+                            metadata={"tool_call_id": tool_call_id}
+                        )
+                        context.messages.append(tool_result_msg)
+                    
+                    # Get final response from the model
+                    messages = context.to_messages()
+                    final_response = await self.provider.generate(messages, stream=False, **kwargs)
+                    
+                    if isinstance(final_response, dict):
+                        content = final_response.get("content", "")
+                    else:
+                        content = final_response
             
             # Save to session
             session.add_message(user_msg)
-            session.add_message(Message(role="assistant", content=response))
+            session.add_message(Message(role="assistant", content=content))
             
             # Save to long-term memory if significant
             if len(prompt) > 50:  # Simple heuristic
                 await self.memory_store.add_memory({
                     "content": prompt,
-                    "response": response,
+                    "response": content,
                     "timestamp": datetime.now().isoformat(),
                     "session_id": session_id
                 })
             
-            return response
+            return content
     
     async def _stream_generate(
         self, 
         messages: List[Dict[str, str]], 
         session: ConversationMemory,
         user_msg: Message,
+        use_tools: bool = False,
         **kwargs
     ) -> AsyncIterator[str]:
         """Handle streaming generation with context management."""
         collected_response = []
+        collected_tool_calls = []
         
         async for chunk in await self.provider.generate(messages, stream=True, **kwargs):
-            collected_response.append(chunk)
-            yield chunk
+            if isinstance(chunk, dict):
+                # Handle chunks with tool calls
+                content = chunk.get("content", "")
+                if content:
+                    collected_response.append(content)
+                    yield content
+                
+                if "tool_calls" in chunk:
+                    collected_tool_calls.extend(chunk["tool_calls"])
+            else:
+                # Regular content chunk
+                collected_response.append(chunk)
+                yield chunk
         
-        # After streaming is complete, save the full response
+        # After streaming is complete, handle tool calls if any
         full_response = "".join(collected_response)
+        
+        if collected_tool_calls and use_tools:
+            # Execute tools and get final response
+            formatted_tool_calls = []
+            for tc in collected_tool_calls:
+                if "function" in tc:
+                    # Parse arguments if they're a JSON string (OpenAI format)
+                    args = tc["function"]["arguments"]
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = {}
+                    
+                    formatted_tool_calls.append({
+                        "name": tc["function"]["name"],
+                        "arguments": args
+                    })
+            
+            if formatted_tool_calls:
+                tool_results = await self._execute_tools(formatted_tool_calls)
+                
+                # Add messages for tool execution
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response,
+                    "tool_calls": collected_tool_calls
+                })
+                
+                # Add tool results - each with proper tool_call_id
+                for i, (result, tc) in enumerate(zip(tool_results, collected_tool_calls)):
+                    tool_call_id = tc.get("id", f"call_{i}")
+                    messages.append({
+                        "role": "tool",
+                        "content": json.dumps(result),
+                        "tool_call_id": tool_call_id
+                    })
+                
+                # Get final response
+                async for final_chunk in await self.provider.generate(messages, stream=True, **kwargs):
+                    if isinstance(final_chunk, dict):
+                        content = final_chunk.get("content", "")
+                        if content:
+                            full_response += content
+                            yield content
+                    else:
+                        full_response += final_chunk
+                        yield final_chunk
         
         # Save to session
         session.add_message(user_msg)

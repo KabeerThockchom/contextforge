@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,92 +7,113 @@ name = "contextforge"
 version = "0.1.0"
 description = "A Python package for building LLM applications with sophisticated context engineering"
 readme = "README.md"
-authors = [
-    {name = "Your Name", email = "your.email@example.com"}
-]
+requires-python = ">=3.8"
 license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+keywords = ["llm", "ai", "context", "engineering", "openai", "anthropic", "ollama", "rag", "tools"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Topic :: Software Development :: Libraries :: Python Modules",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.8"
 dependencies = [
     "aiohttp>=3.8.0",
     "numpy>=1.21.0",
-    "python-dateutil>=2.8.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
-    "pytest-asyncio>=0.20.0",
+    "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
-    "pytest-mock>=3.10.0",
-    "black>=22.0.0",
-    "flake8>=5.0.0",
-    "mypy>=0.990",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
 ]
-embeddings = [
-    "sentence-transformers>=2.2.0",
-    "openai>=1.0.0",
-]
-jupyter = [
-    "jupyter>=1.0.0",
-    "ipykernel>=6.0.0",
-    "notebook>=6.0.0",
+docs = [
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.2.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/contextforge"
-"Bug Tracker" = "https://github.com/yourusername/contextforge/issues"
-Documentation = "https://github.com/yourusername/contextforge#readme"
-
-[tool.setuptools]
-packages = ["contextforge"]
-
-[tool.setuptools.package-data]
-contextforge = ["py.typed"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-asyncio_mode = "auto"
-
-[tool.coverage.run]
-source = ["contextforge"]
-omit = ["*/tests/*", "*/test_*"]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "@(abc\\.)?abstractmethod",
-    "pass",
-    "\\.\\.\\.",
-]
-precision = 2
-show_missing = true
+Repository = "https://github.com/yourusername/contextforge"
+Documentation = "https://contextforge.readthedocs.io/"
+"Bug Reports" = "https://github.com/yourusername/contextforge/issues"
 
 [tool.black]
-line-length = 88
-target-version = ['py38', 'py39', 'py310', 'py311']
+line-length = 127
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 127
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
 
 [tool.mypy]
 python_version = "3.8"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = false
-ignore_missing_imports = true 
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["contextforge"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+] 

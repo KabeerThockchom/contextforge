@@ -1,0 +1,9 @@
+# Requirements for running ContextForge examples with Ollama
+
+# Core dependencies
+aiohttp>=3.8.0
+python-dateutil>=2.8.0
+
+# Note: Install contextforge itself with either:
+#   pip install -e .  (for local development)
+#   pip install contextforge  (when published to PyPI) 

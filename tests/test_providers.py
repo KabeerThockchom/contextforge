@@ -236,7 +236,7 @@ class TestOllamaProvider:
     def test_init_defaults(self):
         """Test initialization with defaults."""
         provider = OllamaProvider()
-        assert provider.model == "llama2"
+        assert provider.model == "qwen3:4b"
         assert provider.base_url == "http://localhost:11434"
     
     def test_init_custom(self):
@@ -253,7 +253,7 @@ class TestOllamaProvider:
         provider = OllamaProvider()
         info = provider.get_info()
         assert info["provider"] == "ollama"
-        assert info["model"] == "llama2"
+        assert info["model"] == "qwen3:4b"
         assert info["supports_streaming"] is True
     
     @pytest.mark.asyncio

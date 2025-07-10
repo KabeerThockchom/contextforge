@@ -27,7 +27,7 @@ class Provider(ABC):
             **kwargs: Additional provider-specific arguments
             
         Returns:
-            If stream=False: Complete response string
+            If stream=False: Complete response string or dict with content and tool_calls
             If stream=True: AsyncIterator yielding response chunks
         """
         pass
@@ -39,7 +39,7 @@ class Provider(ABC):
 
 
 class OpenAIProvider(Provider):
-    """OpenAI API provider."""
+    """OpenAI API provider with tool calling support."""
     
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4", base_url: Optional[str] = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -49,8 +49,8 @@ class OpenAIProvider(Provider):
         if not self.api_key:
             raise ValueError("OpenAI API key required")
     
-    async def generate(self, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Union[str, AsyncIterator[str]]:
-        """Generate using OpenAI API with optional streaming."""
+    async def generate(self, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Union[str, Dict[str, Any], AsyncIterator[str]]:
+        """Generate using OpenAI API with optional streaming and tool support."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -63,6 +63,10 @@ class OpenAIProvider(Provider):
             "max_tokens": kwargs.get("max_tokens", 1000),
             "stream": stream
         }
+        
+        # Add tools if provided
+        if "tools" in kwargs:
+            data["tools"] = kwargs["tools"]
         
         if stream:
             return self._stream_generate(headers, data)
@@ -78,10 +82,19 @@ class OpenAIProvider(Provider):
                     if response.status != 200:
                         raise Exception(f"OpenAI API error: {result}")
                     
-                    return result["choices"][0]["message"]["content"]
+                    message = result["choices"][0]["message"]
+                    
+                    # Check if the response contains tool calls
+                    if "tool_calls" in message:
+                        return {
+                            "content": message.get("content", ""),
+                            "tool_calls": message["tool_calls"]
+                        }
+                    else:
+                        return message.get("content", "")
     
-    async def _stream_generate(self, headers: Dict[str, str], data: Dict[str, Any]) -> AsyncIterator[str]:
-        """Stream responses from OpenAI."""
+    async def _stream_generate(self, headers: Dict[str, str], data: Dict[str, Any]) -> AsyncIterator[Union[str, Dict[str, Any]]]:
+        """Stream responses from OpenAI with tool call support."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/chat/completions",
@@ -92,19 +105,52 @@ class OpenAIProvider(Provider):
                     error = await response.json()
                     raise Exception(f"OpenAI API error: {error}")
                 
+                collected_tool_calls = []
+                
                 async for line in response.content:
                     line = line.decode('utf-8').strip()
                     if line.startswith("data: "):
                         chunk = line[6:]  # Remove "data: " prefix
                         if chunk == "[DONE]":
+                            # If we collected tool calls, yield them at the end
+                            if collected_tool_calls:
+                                yield {
+                                    "content": "",
+                                    "tool_calls": collected_tool_calls
+                                }
                             break
                         
                         try:
                             data = json.loads(chunk)
                             if "choices" in data and len(data["choices"]) > 0:
                                 delta = data["choices"][0].get("delta", {})
+                                
+                                # Check for content
                                 if "content" in delta:
                                     yield delta["content"]
+                                
+                                # Check for tool calls
+                                if "tool_calls" in delta:
+                                    # OpenAI streams tool calls in chunks
+                                    for tc in delta["tool_calls"]:
+                                        if "index" in tc:
+                                            idx = tc["index"]
+                                            # Extend list if needed
+                                            while len(collected_tool_calls) <= idx:
+                                                collected_tool_calls.append({
+                                                    "id": "",
+                                                    "type": "function",
+                                                    "function": {"name": "", "arguments": ""}
+                                                })
+                                            
+                                            # Update the tool call
+                                            if "id" in tc:
+                                                collected_tool_calls[idx]["id"] = tc["id"]
+                                            if "function" in tc:
+                                                if "name" in tc["function"]:
+                                                    collected_tool_calls[idx]["function"]["name"] = tc["function"]["name"]
+                                                if "arguments" in tc["function"]:
+                                                    collected_tool_calls[idx]["function"]["arguments"] += tc["function"]["arguments"]
                         except json.JSONDecodeError:
                             continue
     
@@ -113,7 +159,8 @@ class OpenAIProvider(Provider):
             "provider": "openai",
             "model": self.model,
             "max_tokens": 128000 if "gpt-4" in self.model else 4096,
-            "supports_streaming": True
+            "supports_streaming": True,
+            "supports_tools": True
         }
 
 
@@ -211,19 +258,30 @@ class AnthropicProvider(Provider):
 
 
 class OllamaProvider(Provider):
-    """Ollama local model provider."""
+    """Ollama local model provider with native tool calling support."""
     
-    def __init__(self, model: str = "llama2", base_url: str = "http://localhost:11434"):
+    def __init__(self, model: str = "qwen3:4b", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url
     
-    async def generate(self, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Union[str, AsyncIterator[str]]:
-        """Generate using Ollama API with optional streaming."""
+    async def generate(self, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Union[str, Dict[str, Any], AsyncIterator[str]]:
+        """Generate using Ollama API with optional streaming and tool support."""
         data = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
             "stream": stream
         }
+        
+        # Add tools if provided
+        if "tools" in kwargs:
+            data["tools"] = kwargs["tools"]
+        
+        # Add options like num_ctx for better tool performance
+        if "options" in kwargs:
+            data["options"] = kwargs["options"]
+        elif "tools" in kwargs:
+            # Set a higher context window for better tool calling performance
+            data["options"] = {"num_ctx": 32000}
         
         if stream:
             return self._stream_generate(data)
@@ -238,10 +296,19 @@ class OllamaProvider(Provider):
                     if response.status != 200:
                         raise Exception(f"Ollama API error: {result}")
                     
-                    return result["message"]["content"]
+                    message = result.get("message", {})
+                    
+                    # Check if the response contains tool calls
+                    if "tool_calls" in message:
+                        return {
+                            "content": message.get("content", ""),
+                            "tool_calls": message["tool_calls"]
+                        }
+                    else:
+                        return message.get("content", "")
     
-    async def _stream_generate(self, data: Dict[str, Any]) -> AsyncIterator[str]:
-        """Stream responses from Ollama."""
+    async def _stream_generate(self, data: Dict[str, Any]) -> AsyncIterator[Union[str, Dict[str, Any]]]:
+        """Stream responses from Ollama with tool call support."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/api/chat",
@@ -255,9 +322,18 @@ class OllamaProvider(Provider):
                     line = line.decode('utf-8').strip()
                     if line:
                         try:
-                            data = json.loads(line)
-                            if "message" in data and "content" in data["message"]:
-                                yield data["message"]["content"]
+                            chunk_data = json.loads(line)
+                            if "message" in chunk_data:
+                                message = chunk_data["message"]
+                                
+                                # Check for tool calls in the chunk
+                                if "tool_calls" in message:
+                                    yield {
+                                        "content": message.get("content", ""),
+                                        "tool_calls": message["tool_calls"]
+                                    }
+                                elif "content" in message:
+                                    yield message["content"]
                         except json.JSONDecodeError:
                             continue
     
@@ -266,7 +342,8 @@ class OllamaProvider(Provider):
             "provider": "ollama",
             "model": self.model,
             "max_tokens": 4096,
-            "supports_streaming": True
+            "supports_streaming": True,
+            "supports_tools": True
         }
 
 
